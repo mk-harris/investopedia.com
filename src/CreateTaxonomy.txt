@@ -1,0 +1,211 @@
+
+CreateTaxonomy的流程和逻辑
+
+@传入参数:
+  :url
+  :website
+  :createIfMissing
+
+@step1: 匹配最佳模板的entity_id
+
+SELECT
+  p.entity_id,
+  p.field_pagetemplate_path_value AS path,
+  w.field_pagetemplate_website_value AS website
+FROM devel_field_data_field_pagetemplate_path AS p
+JOIN devel_field_data_field_pagetemplate_website AS w ON w.entity_id = p.entity_id
+WHERE :url LIKE p.field_pagetemplate_path_value
+
+在返回的结果中,取匹配website的,并且/最多的那条, 取出其entity_id
+
+@step2: 拼装模板的数据 (以下的:pid 就是 @step1的entity_id)
+-- int         PageID
+  SELECT pid FROM devel_invpage WHERE pid = :pid
+-- string      Website
+  ###step1分析出来的xxxx子域名
+-- string      Path  把结果拼上域名
+  SELECT alias FROM devel_url_alias WHERE source = 'invpage/'+:pid AND language = 'und'
+-- string      HashKey
+  ### 取上面的alias的部分(不带域名),
+  ##### -- 如果为 invpage/17 则值为 $
+  ##### -- 如果结尾以 .asp或者.aspx结尾, 则去掉这部分
+-- string      Channel
+-- string      SubChannel
+  -- ### 先找到tid, 然后再找该tid是否含有父tid
+  -- 找tid
+  SELECT
+    t.tid
+  FROM devel_field_revision_field_page_channel AS channel
+  JOIN devel_taxonomy_term_data AS t ON t.tid = channel.field_page_channel_tid
+  WHERE channel.entity_id = :pid
+  -- 找是否有父亲
+  SELECT
+    parent AS tid
+  FROM devel_taxonomy_term_hierarchy AS h
+  WHERE h.tid = :tid AND parent <> 0
+    -- 如果有父亲,则根据父亲的tid去查找它的name
+      SELECT name FROM devel_taxonomy_term_data WHERE tid = :tid
+  -- 查找tid的name
+  SELECT name FROM devel_taxonomy_term_data WHERE tid = :tid
+-- string      Advertising
+-- string      SubAdvertising
+  - ### 原理同channel 先找到tid, 然后再找该tid是否含有父tid
+  -- 找tid
+  SELECT
+    t.tid
+  FROM devel_field_revision_field_page_advertising AS advertising
+  JOIN devel_taxonomy_term_data AS t ON t.tid = advertising.field_page_advertising_tid
+  WHERE advertising.entity_id = :pid
+  -- 找是否有父亲
+  SELECT
+    parent AS tid
+  FROM devel_taxonomy_term_hierarchy AS h
+  WHERE h.tid = :tid AND parent <> 0
+    -- 如果有父亲,则根据父亲的tid去查找它的name
+      SELECT name FROM devel_taxonomy_term_data WHERE tid = :tid
+  -- 查找tid的name
+  SELECT name FROM devel_taxonomy_term_data WHERE tid = :tid
+-- string      AdTarget
+  SELECT field_page_adtarget_value FROM devel_field_revision_field_page_adtarget WHERE entity_id = :pid
+-- string      Type
+  SELECT
+    t.name
+  FROM devel_field_revision_field_page_content_type AS ct
+  JOIN devel_taxonomy_term_data AS t ON t.tid = ct.field_page_content_type_tid
+  WHERE ct.entity_id = :pid
+-- string      Lucrativeness
+  SELECT field_page_lucrativeness_value FROM devel_field_revision_field_page_lucrativeness WHERE entity_id = :pid
+-- string      Timelessness
+  SELECT
+    t.name
+  FROM devel_field_revision_field_page_timelessness AS timelessness
+  JOIN devel_taxonomy_term_data AS t ON t.tid = timelessness.field_page_timelessness_tid
+  WHERE timelessness.entity_id = :pid
+-- string      Feature
+  SELECT field_page_feature_value FROM devel_field_revision_field_page_feature WHERE entity_id = :pid
+-- string      Design
+  SELECT field_page_design_value FROM devel_field_revision_field_page_design WHERE entity_id = :pid
+-- string      InterestLevel
+  SELECT 
+    t.name
+  FROM devel_field_revision_field_page_interest_level AS interest_level
+  JOIN devel_taxonomy_term_data AS t ON t.tid = interest_level.field_page_interest_level_tid
+  WHERE interest_level.entity_id = :pid
+-- boolean     Index
+  SELECT
+    data
+  FROM devel_metatag
+  WHERE entity_type = 'invpage' AND entity_id = :pid
+  ### 反序列化data  PHP_FUNCTION:unserialize
+  ### -- 如果里面有 ['robots']['value']['noindex'] == 'noindex' 则赋值为FALSE, 默认赋TRUE
+-- boolean     NoIndexParams
+  SELECT field_page_noindexparams_value FROM devel_field_revision_field_page_noindexparams WHERE entity_id = :pid
+-- boolean     Follow
+  SELECT
+    data
+  FROM devel_metatag
+  WHERE entity_type = 'invpage' AND entity_id = :pid
+  ### 反序列化data  PHP_FUNCTION:unserialize
+  ### -- 如果里面有 ['robots']['value']['nofollow'] == 'nofollow' 则赋值为FALSE, 默认赋TRUE
+-- boolean     Master
+  SELECT field_page_master_value FROM devel_field_revision_field_page_master WHERE entity_id = :pid
+-- string      CreatedBy
+  SELECT
+    u.uid
+  FROM devel_user AS u
+  JOIN devel_invpage AS invpage ON invpage.uid = u.uid
+  WHERE invpage.pid = :pid
+-- datetime    CreatedOn
+  SELECT created FROM devel_invpage WHERE pid = :pid
+-- string      UpdatedBy
+  ## 同上 CreatedBy
+-- datetime    UpdatedOn
+  ## 同上 CreateOn
+-- stringArray Tags
+  SELECT
+    t.name
+  FROM devel_field_revision_field_page_tags AS tags
+  JOIN devel_taxonomy_term_data AS t ON t.tid = tags.field_page_tags_tid
+  WHERE tags.entity_id = :pid
+
+@step3: 赋值后判断传入参数:createIfMissing
+
+在@step2中得到的结果就是最终需要的值了, 接下去会判断一下:createIfMissing
+
+如果:createIfMissing 为 false, 则直接返回结果
+
+如果:createIfMissing 为 true, 则表示需要创建该纪录在数据库, 如下:
+-- 添加数据到主表
+INSERT INTO devel_invpage 
+('type','language','title','owner','uid','status','created','changed','data')
+VALUES
+('invautopage', 'und', :url + '#' + :pid, 'AutoCreate', 1, 0, NOW(), NOW(), 'a:0:{}')
+
+该操作执行后,可以得到一个自增主键的pid值, 记为 :newpid
+
+-- 添加数据到content type
+INSERT INTO devel_field_data_field_page_content_type
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_content_type_tid')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', 0, @step2->type的tid)
+
+INSERT INTO devel_field_revision_field_page_content_type
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_content_type_tid')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', 0, @step2->type的tid)
+
+-- 添加数据到website
+INSERT INTO devel_field_data_field_page_website
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_website_value')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', 0, @step2->website的值)
+
+INSERT INTO devel_field_revision_field_page_website
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_website_value')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', 0, @step2->website的值)
+
+
+-- 添加数据到channel
+INSERT INTO devel_field_data_field_page_channel
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_channel_tid')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', 0, @step2->channel的tid)
+
+INSERT INTO devel_field_revision_field_page_channel
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_channel_tid')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', 0, @step2->channel的tid)
+
+
+-- 添加数据到tags
+-- 这里的delta， 要看数据的条数，从０开始累加：比如有3个tag的tid, 则delta每条为, 0,1,2
+INSERT INTO devel_field_data_field_page_tags
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_tags_tid')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', N, @step2->tags的tid)
+
+INSERT INTO devel_field_revision_field_page_tags
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_tags_tid')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', N, @step2->tags的tid)
+
+-- 添加数据到lucrativeness
+INSERT INTO devel_field_data_field_page_lucrativeness
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_lucrativeness_value')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', N, @step2->lucrativeness的值)
+
+INSERT INTO devel_field_revision_field_page_lucrativeness
+('entity_type', 'bundle', 'deleted', 'entity_id', 'revision_id', 'language', 'delta', 'field_page_lucrativeness_value')
+VALUES
+('invpage', 'invautopage', 0, :newpid, :newpid, 'und', N, @step2->lucrativeness的值)
+
+
+
+
+
+
+
+
+
